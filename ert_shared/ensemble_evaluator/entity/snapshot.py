@@ -206,6 +206,7 @@ class PartialSnapshot:
                         get_stage_id(e_source),
                         get_step_id(e_source),
                         job_id,
+                        # XXX: can we remove this?
                         job=Job(
                             stdout=job[ids.STDOUT],
                             stderr=job[ids.STDERR],

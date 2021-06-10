@@ -1,6 +1,8 @@
 from datetime import datetime
+import logging
 import ert_shared.status.entity.state as state
 from ert_shared.ensemble_evaluator.entity import identifiers as ids
+from ert_shared.ensemble_evaluator.entity.ensemble_base import _EnsembleStateTracker
 from cloudevents.http.event import CloudEvent
 import pytest
 from ert_shared.ensemble_evaluator.entity import command, tool
@@ -13,11 +15,11 @@ from ert_shared.ensemble_evaluator.entity.snapshot import (
 
 def test_snapshot_merge(snapshot):
     update_event = PartialSnapshot(snapshot)
-    update_event.update_status(status="running")
+    update_event.update_status(status=state.ENSEMBLE_STATE_STARTED)
 
     snapshot.merge_event(update_event)
 
-    assert snapshot.get_status() == "running"
+    assert snapshot.get_status() == state.ENSEMBLE_STATE_STARTED
 
     update_event = PartialSnapshot(snapshot)
     update_event.update_job(
@@ -52,7 +54,7 @@ def test_snapshot_merge(snapshot):
 
     snapshot.merge_event(update_event)
 
-    assert snapshot.get_status() == "running"
+    assert snapshot.get_status() == state.ENSEMBLE_STATE_STARTED
 
     assert snapshot.get_job(real_id="1", step_id="0", job_id="0") == Job(
         status="Finished",
@@ -186,3 +188,50 @@ def test_multiple_cloud_events_trigger_non_communicated_change():
         )
     )
     assert partial.to_dict()["reals"]["0"]["status"] == state.REALIZATION_STATE_FINISHED
+
+
+@pytest.mark.parametrize(
+    "transition, allowed",
+    [
+        ([state.ENSEMBLE_STATE_STARTED, state.ENSEMBLE_STATE_STOPPED], True),
+        ([state.ENSEMBLE_STATE_STARTED, state.ENSEMBLE_STATE_FAILED], True),
+        ([state.ENSEMBLE_STATE_STARTED, state.ENSEMBLE_STATE_CANCELLED], True),
+        ([state.ENSEMBLE_STATE_CANCELLED, state.ENSEMBLE_STATE_STARTED], False),
+        ([state.ENSEMBLE_STATE_CANCELLED, state.ENSEMBLE_STATE_STOPPED], False),
+        ([state.ENSEMBLE_STATE_CANCELLED, state.ENSEMBLE_STATE_FAILED], False),
+        ([state.ENSEMBLE_STATE_STOPPED, state.ENSEMBLE_STATE_FAILED], False),
+        ([state.ENSEMBLE_STATE_STOPPED, state.ENSEMBLE_STATE_CANCELLED], False),
+        ([state.ENSEMBLE_STATE_STOPPED, state.ENSEMBLE_STATE_STARTED], False),
+        ([state.ENSEMBLE_STATE_FAILED, state.ENSEMBLE_STATE_STARTED], False),
+        ([state.ENSEMBLE_STATE_FAILED, state.ENSEMBLE_STATE_STOPPED], False),
+        ([state.ENSEMBLE_STATE_FAILED, state.ENSEMBLE_STATE_CANCELLED], False),
+        ([state.ENSEMBLE_STATE_UNKNOWN, state.ENSEMBLE_STATE_STARTED], True),
+    ],
+)
+def test_ensemble_state_tracker(transition, allowed, caplog, snapshot):
+    initial_state, update_state = transition
+    with caplog.at_level(logging.WARNING):
+        state_tracker = _EnsembleStateTracker(initial_state)
+        new_state = state_tracker.update_state(update_state)
+        assert new_state == update_state
+        if allowed:
+            assert len(caplog.records) == 0
+        else:
+            assert len(caplog.records) == 1
+            log_mgs = f"Illegal state transition from {initial_state} to {update_state}"
+            assert log_mgs == caplog.records[0].msg
+
+
+def test_ensemble_state_tracker_handles():
+    state_machine = _EnsembleStateTracker()
+    expected_sates = [
+        state.ENSEMBLE_STATE_UNKNOWN,
+        state.ENSEMBLE_STATE_STARTED,
+        state.ENSEMBLE_STATE_FAILED,
+        state.ENSEMBLE_STATE_STOPPED,
+        state.ENSEMBLE_STATE_CANCELLED,
+    ]
+    handled_states = list(state_machine._handles.keys())
+    assert len(handled_states) == len(expected_sates)
+    for handled_state in handled_states:
+        assert handled_state in expected_sates
